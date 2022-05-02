@@ -1,0 +1,13 @@
+{
+    "files.associations": {
+        "*.h": "cpp",
+        "ostream": "cpp",
+        "functional": "cpp",
+        "istream": "cpp",
+        "limits": "cpp",
+        "type_traits": "cpp",
+        "typeinfo": "cpp",
+        "fstream": "cpp",
+        "random": "cpp"
+    }
+}

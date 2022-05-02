@@ -60,7 +60,8 @@ void reverse()
     _dir = _dir == HIGH ? LOW : HIGH;
 }
 
-void IRAM_ATTR ButtonPress()
+// ISRs
+void IRAM_ATTR onButtonPress()
 {
     // ledcWrite(0, 0);
     int b = digitalRead(BTN_PIN);
@@ -76,70 +77,7 @@ void IRAM_ATTR ButtonPress()
     }
 }
 
-void enable()
-{
-    digitalWrite(EN_PIN, LOW);
-}
-
-void disable()
-{
-    digitalWrite(EN_PIN, HIGH);
-}
-
-void init_common()
-{
-    driver.toff(3);
-    driver.blank_time(24);
-    driver.microsteps(16);
-}
-
-void init_tune()
-{
-    Serial.println("Setting motor paramters for motor tuning");
-    init_common();
-    driver.rms_current(1800);  // mA
-    driver.TCOOLTHRS(0xFFFFF); // 20bit max
-    driver.SGTHRS(STALL_VALUE_LOW);
-    _stopOnStall = false;
-}
-
-void init_homing()
-{
-    Serial.println("Setting motor paramters for homing");
-    init_common();
-    driver.rms_current(1300);  // mA
-    driver.TCOOLTHRS(0xFFFFF); // 20bit max
-    driver.pwm_autoscale(true);
-    driver.pwm_autograd(true);
-    driver.SGTHRS(STALL_VALUE);
-    _stopOnStall = true;
-}
-
-void init_full()
-{
-    Serial.println("Setting motor paramters for full power");
-    init_common();
-    driver.rms_current(1800);  // mA
-    driver.TCOOLTHRS(0xFFFFF); // 20bit max
-    driver.pwm_autoscale(true);
-    driver.pwm_autograd(true);
-    driver.SGTHRS(STALL_VALUE_LOW);
-    _stopOnStall = false;
-}
-
-void tune()
-{
-    Serial.println("Tuning current");
-    init_tune();
-    vTaskDelay(500 / portTICK_PERIOD_MS);
-    setSpeedDir(10000, OPEN);
-    vTaskDelay(500 / portTICK_PERIOD_MS);
-    setSpeedDir(10000, CLOSE);
-    vTaskDelay(400 / portTICK_PERIOD_MS);
-    setSpeedDir(0, OPEN);
-}
-
-void IRAM_ATTR Stall()
+void IRAM_ATTR onStall()
 {
     // ledcWrite(0, 0);
     bool st = digitalRead(DIAG_PIN) == HIGH;
@@ -159,7 +97,8 @@ void IRAM_ATTR Stall()
     }
 }
 
-void IRAM_ATTR Index()
+
+void IRAM_ATTR onIndex()
 {
     if (_dir == HIGH)
         _pos--;
@@ -181,7 +120,73 @@ void IRAM_ATTR Index()
     }
 }
 
-void setup_driver()
+
+void enable()
+{
+    digitalWrite(EN_PIN, LOW);
+}
+
+void disable()
+{
+    digitalWrite(EN_PIN, HIGH);
+}
+
+void initCommon()
+{
+    driver.toff(3);
+    driver.blank_time(24);
+    driver.microsteps(16);
+}
+
+void initTune()
+{
+    Serial.println("Setting motor paramters for motor tuning");
+    initCommon();
+    driver.rms_current(1800);  // mA
+    driver.TCOOLTHRS(0xFFFFF); // 20bit max
+    driver.SGTHRS(STALL_VALUE_LOW);
+    _stopOnStall = false;
+}
+
+void initHoming()
+{
+    Serial.println("Setting motor paramters for homing");
+    initCommon();
+    driver.rms_current(1300);  // mA
+    driver.TCOOLTHRS(0xFFFFF); // 20bit max
+    driver.pwm_autoscale(true);
+    driver.pwm_autograd(true);
+    driver.SGTHRS(STALL_VALUE);
+    _stopOnStall = true;
+}
+
+void initFullPower()
+{
+    Serial.println("Setting motor paramters for full power");
+    initCommon();
+    driver.rms_current(1800);  // mA
+    driver.TCOOLTHRS(0xFFFFF); // 20bit max
+    driver.pwm_autoscale(true);
+    driver.pwm_autograd(true);
+    driver.SGTHRS(STALL_VALUE_LOW);
+    _stopOnStall = false;
+}
+
+void tuneCurrent()
+{
+    Serial.println("Tuning current");
+    initTune();
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+    setSpeedDir(10000, OPEN);
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+    setSpeedDir(10000, CLOSE);
+    vTaskDelay(400 / portTICK_PERIOD_MS);
+    setSpeedDir(0, OPEN);
+}
+
+
+
+void setupDriverComms()
 {
     SERIAL_PORT.begin(115200, SERIAL_8N1, 21, 22);
     driver.begin();
@@ -196,9 +201,9 @@ void setup_driver()
 
     ledcSetup(0, 100, 8);
     ledcAttachPin(STEP_PIN, 0);
-    attachInterrupt(DIAG_PIN, Stall, CHANGE);
-    attachInterrupt(BTN_PIN, ButtonPress, CHANGE);
-    attachInterrupt(IDX_PIN, Index, RISING);
+    attachInterrupt(DIAG_PIN, onStall, CHANGE);
+    attachInterrupt(BTN_PIN, onButtonPress, CHANGE);
+    attachInterrupt(IDX_PIN, onIndex, RISING);
 }
 
 void resetStall()
@@ -207,12 +212,12 @@ void resetStall()
     disable();
     vTaskDelay(500 / portTICK_PERIOD_MS);
     enable();
-    init_full();
+    initFullPower();
     reverse();
     setSpeedDir(1000, _dir);
     vTaskDelay(1000 / portTICK_PERIOD_MS);
     setSpeedDir(0, _dir);
-    init_homing();
+    initHoming();
     reverse();
     _stalled = false;
 }
@@ -227,7 +232,7 @@ int waitForStall()
     return _stallPos;
 }
 
-void move_to(int tgt, int speedafter = 0)
+void MoveTo(int tgt, int speedafter = 0)
 {
     _targetPos = tgt;
     _targetSpeed = speedafter;
@@ -241,26 +246,26 @@ void move_to(int tgt, int speedafter = 0)
     }
 }
 
-void move_steps(int steps, int dir, int speedafter = 0)
+void moveSteps(int steps, int dir, int speedafter = 0)
 {
     int t = _pos + (dir == OPEN ? steps : (0 - steps));
-    move_to(t, speedafter);
+    MoveTo(t, speedafter);
 }
 
-void home_open()
+void homeOpen()
 {
     Serial.println("Homing open");
-    init_homing();
+    initHoming();
     setSpeedDir(1000, OPEN);
     int openPos = waitForStall();
     Serial.printf("Open pos: %d\n", openPos);
 }
 
-void home_closed()
+void homeClosed()
 {
     Serial.println("Homing closed, fast");
-    init_homing();
-    move_steps(300, CLOSE, 1000);
+    initHoming();
+    moveSteps(300, CLOSE, 1000);
     Serial.println("Homing closed");
     setSpeedDir(1000, CLOSE);
     int closedPos = waitForStall();
@@ -269,11 +274,12 @@ void home_closed()
 
 void startupSequence()
 {
-    tune();
-    home_open();
-    home_closed();
+    tuneCurrent();
+    homeOpen();
+    homeClosed();
 }
 
+// Arduino lifecycle
 void setup()
 {
     Serial.begin(300000); // Init serial port and set baudrate
@@ -281,7 +287,7 @@ void setup()
         ; // Wait for serial port to connect
     Serial.println("\nStart...");
 
-    setup_driver();
+    setupDriverComms();
     startupSequence();
 }
 

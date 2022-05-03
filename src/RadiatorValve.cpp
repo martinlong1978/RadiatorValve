@@ -19,6 +19,7 @@ const uint8_t IDX_PIN = GPIO_NUM_25;
 // Directions
 #define OPEN LOW
 #define CLOSE HIGH
+#define NULLPOS -99999
 
 TMC2209Stepper driver(&SERIAL_PORT, R_SENSE, DRIVER_ADDRESS);
 
@@ -28,20 +29,22 @@ using namespace TMC2208_n;
 bool _stalled = false;
 int _stallPos = 0;
 
-int _pos = 0;
+int volatile _pos = 0;
+int _limit = 0;
 int _dir = HIGH;
 bool _stopOnStall = true;
-int _targetPos = 0;
+int _targetPos = NULLPOS;
 int _targetSpeed = 0;
 
 int _avg[] = {0, 0, 0, 0, 0};
+int _totalSg;
 int _avgPtr = 0;
 
 bool _btnPressed = false;
 
 void setSpeedDir(int speed, int d)
 {
-    Serial.printf("Setting speed %d direction %d\n", speed, d);
+    // Serial.printf("Setting speed %d direction %d\n", speed, d);
     _dir = d;
     digitalWrite(DIR_PIN, _dir);
     ledcSetup(0, speed, 8);
@@ -97,29 +100,54 @@ void IRAM_ATTR onStall()
     }
 }
 
-
-void IRAM_ATTR onIndex()
+void adjustSpeed()
 {
-    if (_dir == HIGH)
-        _pos--;
-    else
-        _pos++;
-    if (_targetPos != 0 && (_dir == CLOSE ? _pos <= _targetPos : _pos >= _targetPos))
+    if (_targetPos != NULLPOS && (_dir == CLOSE ? _pos <= _targetPos : _pos >= _targetPos))
     {
         setSpeedDir(_targetSpeed, _dir);
-        Serial.printf("HIT TARGET %d Pos %d\n", _targetPos, _pos);
-        _targetPos = 0;
+        Serial.printf("HIT TARGET %d Pos %d Dir %s\n", _targetPos, _pos, _dir == OPEN ? "OPEN" : "CLOSE");
+        _targetPos = NULLPOS;
     }
-    else if (_targetPos != 0 && abs(_pos - _targetPos) < 20)
+    else if (_targetPos != NULLPOS && abs(_pos - _targetPos) < 10)
+    {
+        setSpeedDir(500, _dir);
+    }
+    else if (_targetPos != NULLPOS && abs(_pos - _targetPos) < 20)
     {
         setSpeedDir(1000, _dir);
     }
-    else if (_targetPos != 0 && abs(_pos - _targetPos) < 50)
+    else if (_targetPos != NULLPOS && abs(_pos - _targetPos) < 40)
+    {
+        setSpeedDir(1500, _dir);
+    }
+    else if (_targetPos != NULLPOS && abs(_pos - _targetPos) < 50)
+    {
+        setSpeedDir(2000, _dir);
+    }
+    else if (_targetPos != NULLPOS && abs(_pos - _targetPos) < 60)
+    {
+        setSpeedDir(2500, _dir);
+    }
+    else
     {
         setSpeedDir(3000, _dir);
     }
 }
 
+void IRAM_ATTR onIndex()
+{
+    if (_dir == CLOSE)
+        _pos--;
+    else
+        _pos++;
+
+    _totalSg -= _avg[_avgPtr];
+    _avg[_avgPtr] = driver.SG_RESULT();
+    _totalSg += _avg[_avgPtr++];
+    _avgPtr = _avgPtr % 5;
+
+    adjustSpeed();
+}
 
 void enable()
 {
@@ -135,7 +163,8 @@ void initCommon()
 {
     driver.toff(3);
     driver.blank_time(24);
-    driver.microsteps(16);
+    driver.microsteps(32);
+    driver.hold_multiplier(0.1);
 }
 
 void initTune()
@@ -184,8 +213,6 @@ void tuneCurrent()
     setSpeedDir(0, OPEN);
 }
 
-
-
 void setupDriverComms()
 {
     SERIAL_PORT.begin(115200, SERIAL_8N1, 21, 22);
@@ -232,15 +259,20 @@ int waitForStall()
     return _stallPos;
 }
 
-void MoveTo(int tgt, int speedafter = 0)
+void moveTo(int tgt, int speedafter = 0)
 {
+    Serial.printf("Moving from %d to %d\n", _pos, tgt);
+    if (tgt > _limit && _limit > 0)
+        tgt = _limit;
+    if (tgt < 0)
+        tgt = 0;
     _targetPos = tgt;
     _targetSpeed = speedafter;
-    int dir = _pos < tgt ? OPEN : CLOSE;
-    setSpeedDir(5000, dir);
-    while (dir == OPEN ? _pos <= _targetPos : _pos >= _targetPos)
+    _dir = _pos < tgt ? OPEN : CLOSE;
+    adjustSpeed();
+    while (_dir == OPEN ? _pos <= _targetPos : _pos >= _targetPos)
     {
-        if (_targetPos == 0)
+        if (_targetPos == NULLPOS)
             return;
         vTaskDelay(100 / portTICK_PERIOD_MS);
     }
@@ -249,33 +281,25 @@ void MoveTo(int tgt, int speedafter = 0)
 void moveSteps(int steps, int dir, int speedafter = 0)
 {
     int t = _pos + (dir == OPEN ? steps : (0 - steps));
-    MoveTo(t, speedafter);
-}
-
-void homeOpen()
-{
-    Serial.println("Homing open");
-    initHoming();
-    setSpeedDir(1000, OPEN);
-    int openPos = waitForStall();
-    Serial.printf("Open pos: %d\n", openPos);
+    moveTo(t, speedafter);
 }
 
 void homeClosed()
 {
     Serial.println("Homing closed, fast");
     initHoming();
-    moveSteps(300, CLOSE, 1000);
-    Serial.println("Homing closed");
+    // moveSteps(400, CLOSE, 1000);
+    // Serial.println("Homing closed");
     setSpeedDir(1000, CLOSE);
     int closedPos = waitForStall();
+    Serial.printf("Pos %d\n", _pos);
     Serial.printf("Closed pos: %d\n", closedPos);
+    _limit = 120;
 }
 
 void startupSequence()
 {
     tuneCurrent();
-    homeOpen();
     homeClosed();
 }
 
@@ -289,6 +313,14 @@ void setup()
 
     setupDriverComms();
     startupSequence();
+
+    initFullPower();
+
+    // Test Openclose
+    moveTo(_limit);
+    moveTo(5);
+    moveTo(_limit);
+    moveTo(5);
 }
 
 void loop()
@@ -299,24 +331,20 @@ void loop()
     while (Serial.available() > 0)
     {
         int8_t read_byte = Serial.read();
-    }
-
-    if (_stalled)
-    {
+        if (read_byte == 'o')
+        {
+            moveSteps(5, OPEN);
+        }
+        if (read_byte == 'c')
+        {
+            moveSteps(5, CLOSE);
+        }
+        Serial.println(_pos);
     }
 
     if ((ms - last_time) > 300)
     { // run every 0.1s
         last_time = ms;
         vTaskDelay(300 / portTICK_PERIOD_MS);
-
-        // Serial.print("0 ");
-        // Serial.print(driver.SG_RESULT(), DEC);
-        // Serial.print(" ");
-        // Serial.print(driver.cs2rms(driver.cs_actual()), DEC);
-        // Serial.print(" ");
-        // Serial.print(driver.cs_actual(), DEC);
-        // Serial.print(" ");
-        // Serial.println(pos, DEC);
     }
 }
